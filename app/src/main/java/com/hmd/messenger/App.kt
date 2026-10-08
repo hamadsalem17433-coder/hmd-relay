@@ -16,6 +16,10 @@ class App : Application() {
         super.onCreate()
         val notifier = Notifier(this)
         relay.onIncoming = { notifier.show(it) }
-        FirebaseMessaging.getInstance().token.addOnSuccessListener { relay.setFcmToken(it) }
+        try {
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { relay.setFcmToken(it) }
+        } catch (t: Throwable) {
+            t.printStackTrace()
+        }
     }
 }

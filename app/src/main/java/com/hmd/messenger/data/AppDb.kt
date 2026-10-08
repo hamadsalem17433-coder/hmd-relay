@@ -20,6 +20,7 @@ data class PeerInfo(
 
 interface MessageDao {
     fun peerNow(): PeerInfo?
+    fun savePeer(peer: PeerInfo)
     fun insert(m: MessageEntity): Long
     fun pending(): List<MessageEntity>
     fun markSent(id: String)
@@ -36,6 +37,14 @@ class AppDb private constructor(context: Context) {
             val dhPub = prefs.getString("peer_dh_pub", "sample_dh_pub_key_32_bytes_test") ?: "sample_dh_pub_key_32_bytes_test"
             val signPub = prefs.getString("peer_sign_pub", "sample_sign_pub_key_32_bytes_test") ?: "sample_sign_pub_key_32_bytes_test"
             return PeerInfo(server, dhPub, signPub)
+        }
+
+        override fun savePeer(peer: PeerInfo) {
+            prefs.edit()
+                .putString("peer_server", peer.server)
+                .putString("peer_dh_pub", peer.dhPub)
+                .putString("peer_sign_pub", peer.signPub)
+                .apply()
         }
 
         @Synchronized

@@ -1,21 +1,21 @@
 package com.hmd.messenger
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
 import com.hmd.messenger.media.AudioPlayer
 import com.hmd.messenger.media.AudioRecorder
 import com.hmd.messenger.ui.ChatAdapter
@@ -26,7 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
 
     private val app get() = application as App
     private lateinit var recorder: AudioRecorder
@@ -38,7 +38,7 @@ class MainActivity : Activity() {
     private val uiScope = CoroutineScope(Dispatchers.Main + Job())
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate()
+        super.onCreate(savedInstanceState)
 
         recorder = AudioRecorder(this)
         player = AudioPlayer(this)
@@ -46,14 +46,14 @@ class MainActivity : Activity() {
 
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#121212")) // Dark background
+            setBackgroundColor(Color.parseColor("#0B0E14")) // Sleek deep slate
         }
 
         // ---------- 1. الشريط العلوي (Top Action Bar) ----------
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(32, 32, 32, 32)
-            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(24, 20, 24, 20)
+            setBackgroundColor(Color.parseColor("#151921"))
             gravity = Gravity.CENTER_VERTICAL
         }
 
@@ -66,22 +66,39 @@ class MainActivity : Activity() {
             text = "HMD Messenger"
             setTextColor(Color.WHITE)
             textSize = 18f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
         }
         titleContainer.addView(appTitleTv)
 
         statusTv = TextView(this).apply {
             text = "🔴 غير متصل"
-            setTextColor(Color.parseColor("#B0BEC5"))
+            setTextColor(Color.parseColor("#8696A0"))
             textSize = 12f
         }
         titleContainer.addView(statusTv)
         topBar.addView(titleContainer)
 
+        val btnCircleBg = {
+            GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#1F2634"))
+            }
+        }
+
+        val btnPillBg = {
+            GradientDrawable().apply {
+                cornerRadius = 32f
+                setColor(Color.parseColor("#1F2634"))
+            }
+        }
+
         val audioCallBtn = Button(this).apply {
             text = "📞"
-            textSize = 16f
-            setBackgroundColor(Color.TRANSPARENT)
+            textSize = 15f
+            background = btnCircleBg()
+            layoutParams = LinearLayout.LayoutParams(80, 80).apply {
+                rightMargin = 12
+            }
             setOnClickListener {
                 if (checkPermissions()) {
                     val intent = Intent(this@MainActivity, CallActivity::class.java).apply {
@@ -96,8 +113,11 @@ class MainActivity : Activity() {
 
         val videoCallBtn = Button(this).apply {
             text = "📹"
-            textSize = 16f
-            setBackgroundColor(Color.TRANSPARENT)
+            textSize = 15f
+            background = btnCircleBg()
+            layoutParams = LinearLayout.LayoutParams(80, 80).apply {
+                rightMargin = 12
+            }
             setOnClickListener {
                 if (checkPermissions()) {
                     val intent = Intent(this@MainActivity, CallActivity::class.java).apply {
@@ -109,6 +129,19 @@ class MainActivity : Activity() {
             }
         }
         topBar.addView(videoCallBtn)
+
+        val qrBtn = Button(this).apply {
+            text = "📱 QR"
+            textSize = 12f
+            setTextColor(Color.parseColor("#53BDEB"))
+            background = btnPillBg()
+            setPadding(16, 0, 16, 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, 80)
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, QrActivity::class.java))
+            }
+        }
+        topBar.addView(qrBtn)
 
         rootLayout.addView(topBar)
 
@@ -127,29 +160,40 @@ class MainActivity : Activity() {
         val bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(16, 16, 16, 16)
-            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setBackgroundColor(Color.parseColor("#151921"))
             gravity = Gravity.CENTER_VERTICAL
         }
 
         val inputBg = GradientDrawable().apply {
             cornerRadius = 48f
-            setColor(Color.parseColor("#2C2C2C"))
+            setColor(Color.parseColor("#1F2633"))
         }
 
         val inputEt = EditText(this).apply {
             hint = "اكتب رسالة مشفرة..."
-            setHintTextColor(Color.parseColor("#9E9E9E"))
+            setHintTextColor(Color.parseColor("#8A99AD"))
             setTextColor(Color.WHITE)
             background = inputBg
             setPadding(32, 20, 32, 20)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = 12
+            }
         }
         bottomBar.addView(inputEt)
 
+        val sendBtnBg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor("#00A884")) // Emerald Accent
+        }
+
         val sendBtn = Button(this).apply {
-            text = "إرسال ➔"
-            setTextColor(Color.parseColor("#80D8FF"))
-            setBackgroundColor(Color.TRANSPARENT)
+            text = "➔"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            background = sendBtnBg
+            layoutParams = LinearLayout.LayoutParams(88, 88).apply {
+                rightMargin = 12
+            }
             setOnClickListener {
                 val txt = inputEt.text.toString().trim()
                 if (txt.isNotEmpty()) {
@@ -161,10 +205,16 @@ class MainActivity : Activity() {
         }
         bottomBar.addView(sendBtn)
 
+        val voiceBtnBg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor("#1F2633"))
+        }
+
         val voiceBtn = Button(this).apply {
             text = "🎤"
-            textSize = 18f
-            setBackgroundColor(Color.TRANSPARENT)
+            textSize = 16f
+            background = voiceBtnBg
+            layoutParams = LinearLayout.LayoutParams(88, 88)
             setOnTouchListener { _, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
@@ -172,6 +222,7 @@ class MainActivity : Activity() {
                             if (recorder.start()) {
                                 isRecording = true
                                 text = "🔴"
+                                (background as? GradientDrawable)?.setColor(Color.parseColor("#DC3545"))
                                 Toast.makeText(this@MainActivity, "جارٍ تسجيل الملاحظة الصوتية...", Toast.LENGTH_SHORT).show()
                             }
                         } else requestPermissions()
@@ -181,6 +232,7 @@ class MainActivity : Activity() {
                         if (isRecording) {
                             isRecording = false
                             text = "🎤"
+                            (background as? GradientDrawable)?.setColor(Color.parseColor("#1F2633"))
                             val result = recorder.stop()
                             if (result != null && result.bytes.isNotEmpty()) {
                                 app.relay.sendVoice(result.bytes, result.durationSec)
@@ -229,7 +281,9 @@ class MainActivity : Activity() {
             val entities = app.db.dao().allMessages()
             val chatItems = entities.map { ChatMessageItem(it) }
             adapter.setItems(chatItems)
-            listView.setSelection(adapter.count - 1)
+            if (adapter.count > 0) {
+                listView.setSelection(adapter.count - 1)
+            }
         }
     }
 
@@ -252,7 +306,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         app.relay.foreground = false
-        recorder.cleanup()
-        player.stop()
+        if (::recorder.isInitialized) recorder.cleanup()
+        if (::player.isInitialized) player.stop()
     }
 }

@@ -2,6 +2,7 @@ package com.hmd.messenger
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
@@ -29,14 +30,14 @@ class CallActivity : Activity(), CallListener {
     private var isMuted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate()
+        super.onCreate(savedInstanceState)
 
         callManager = CallManager(this, app.relay)
         callManager.setListener(this)
 
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0F1419")) // Dark background
+            setBackgroundColor(Color.parseColor("#0B0E14")) // Sleek deep slate
             gravity = Gravity.CENTER
             setPadding(48, 64, 48, 64)
         }
@@ -44,12 +45,12 @@ class CallActivity : Activity(), CallListener {
         // ---------- أيقونة / صورة المتصل الدائرية ----------
         val avatarBg = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#1E2732"))
+            setColor(Color.parseColor("#1F2633"))
         }
 
         val avatarTv = TextView(this).apply {
             text = "👤"
-            textSize = 64f
+            textSize = 56f
             gravity = Gravity.CENTER
             background = avatarBg
             layoutParams = LinearLayout.LayoutParams(240, 240).apply {
@@ -61,18 +62,18 @@ class CallActivity : Activity(), CallListener {
         callerNameTv = TextView(this).apply {
             text = "HMD Peer"
             setTextColor(Color.WHITE)
-            textSize = 24f
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            textSize = 22f
+            setTypeface(null, Typeface.BOLD)
             gravity = Gravity.CENTER
         }
         rootLayout.addView(callerNameTv)
 
         statusTv = TextView(this).apply {
             text = "جارٍ بدء الاتصال..."
-            setTextColor(Color.parseColor("#8B98A5"))
-            textSize = 16f
+            setTextColor(Color.parseColor("#8696A0"))
+            textSize = 15f
             gravity = Gravity.CENTER
-            setPadding(0, 16, 0, 96)
+            setPadding(0, 12, 0, 80)
         }
         rootLayout.addView(statusTv)
 
@@ -84,25 +85,25 @@ class CallActivity : Activity(), CallListener {
 
         val btnCircleGreen = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#2E7D32"))
+            setColor(Color.parseColor("#00A884"))
         }
 
         val btnCircleRed = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#C62828"))
+            setColor(Color.parseColor("#DC3545"))
         }
 
         val btnCircleGray = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#37474F"))
+            setColor(Color.parseColor("#1F2633"))
         }
 
         answerBtn = Button(this).apply {
             text = "📞"
-            textSize = 24f
+            textSize = 22f
             background = btnCircleGreen
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(140, 140).apply {
+            layoutParams = LinearLayout.LayoutParams(136, 136).apply {
                 rightMargin = 32
             }
             setOnClickListener {
@@ -113,10 +114,10 @@ class CallActivity : Activity(), CallListener {
 
         muteBtn = Button(this).apply {
             text = "🎙️"
-            textSize = 24f
+            textSize = 22f
             background = btnCircleGray
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(140, 140).apply {
+            layoutParams = LinearLayout.LayoutParams(136, 136).apply {
                 rightMargin = 32
             }
             setOnClickListener {
@@ -129,9 +130,9 @@ class CallActivity : Activity(), CallListener {
 
         endBtn = Button(this).apply {
             text = "❌"
-            textSize = 24f
+            textSize = 22f
             background = btnCircleRed
-            layoutParams = LinearLayout.LayoutParams(140, 140)
+            layoutParams = LinearLayout.LayoutParams(136, 136)
             setOnClickListener {
                 callManager.endCall()
                 finish()

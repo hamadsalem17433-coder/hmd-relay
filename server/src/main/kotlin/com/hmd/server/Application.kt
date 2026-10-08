@@ -171,3 +171,160 @@ fun Application.module() {
 
 private fun envelopeJson(e: Envelope) =
     buildJsonObject { put("type", "msg"); put("id", e.id); put("payload", e.payload) }.toString()
+
+// ---------- Helper Data Structures & In-Memory Repository ----------
+
+data class Keys(val sign: String, val dh: String)
+
+data class PairData(
+    val id: String,
+    val tokenHash: String,
+    val expiresAt: Long,
+    val a: Keys,
+    var b: Keys? = null,
+    var active: Boolean = false,
+    var tokenUsed: Boolean = false
+) {
+    fun owns(signPub: String): Boolean = a.sign == signPub || b?.sign == signPub
+    fun peerOf(signPub: String): String? = if (a.sign == signPub) b?.sign else if (b?.sign == signPub) a.sign else null
+}
+
+data class Envelope(val id: String, val sender: String, val payload: String)
+
+enum class Enq { OK, FULL, DUP }
+
+fun sha256(s: String): String {
+    val md = java.security.MessageDigest.getInstance("SHA-256")
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(md.digest(s.toByteArray()))
+}
+
+fun tokenMatches(p: PairData, token: String): Boolean = p.tokenHash == sha256(token)
+
+class RateLimiter(private val max: Int, private val windowMs: Long) {
+    private val requests = ConcurrentHashMap<String, MutableList<Long>>()
+
+    fun allow(ip: String): Boolean {
+        val now = System.currentTimeMillis()
+        val list = requests.computeIfAbsent(ip) { mutableListOf() }
+        synchronized(list) {
+            list.removeAll { now - it > windowMs }
+            if (list.size >= max) return false
+            list.add(now)
+            return true
+        }
+    }
+
+    fun sweep() {
+        val now = System.currentTimeMillis()
+        requests.entries.removeIf { (_, list) ->
+            synchronized(list) {
+                list.removeAll { now - it > windowMs }
+                list.isEmpty()
+            }
+        }
+    }
+}
+
+interface ServerRepo {
+    fun cleanup()
+    fun createPair(pairId: String, tokenHash: String, expiresAt: Long, a: Keys): Boolean
+    fun pair(pairId: String): PairData?
+    fun pairByDevice(signPub: String): PairData?
+    fun join(pairId: String, b: Keys, now: Long): Boolean
+    fun confirm(pairId: String, signPub: String): Boolean
+    fun remove(pairId: String)
+    fun enqueue(peerSignPub: String, env: Envelope): Enq
+    fun pending(signPub: String): List<Envelope>
+    fun ack(signPub: String, msgId: String)
+    fun setFcm(signPub: String, token: String)
+    fun fcm(signPub: String): String?
+    fun dropFcm(signPub: String, token: String)
+}
+
+fun createRepo(): ServerRepo = InMemRepo()
+
+private class InMemRepo : ServerRepo {
+    private val pairs = ConcurrentHashMap<String, PairData>()
+    private val deviceToPair = ConcurrentHashMap<String, String>()
+    private val queues = ConcurrentHashMap<String, ConcurrentHashMap<String, Envelope>>()
+    private val fcmTokens = ConcurrentHashMap<String, String>()
+
+    override fun cleanup() {
+        val now = System.currentTimeMillis()
+        pairs.entries.removeIf { (_, p) ->
+            val expired = !p.active && now > p.expiresAt
+            if (expired) {
+                deviceToPair.remove(p.a.sign)
+                p.b?.sign?.let { deviceToPair.remove(it) }
+            }
+            expired
+        }
+    }
+
+    override fun createPair(pairId: String, tokenHash: String, expiresAt: Long, a: Keys): Boolean {
+        if (pairs.containsKey(pairId)) return false
+        val p = PairData(pairId, tokenHash, expiresAt, a)
+        pairs[pairId] = p
+        deviceToPair[a.sign] = pairId
+        return true
+    }
+
+    override fun pair(pairId: String): PairData? = pairs[pairId]
+
+    override fun pairByDevice(signPub: String): PairData? {
+        val pid = deviceToPair[signPub] ?: return null
+        return pairs[pid]
+    }
+
+    override fun join(pairId: String, b: Keys, now: Long): Boolean {
+        val p = pairs[pairId] ?: return false
+        if (p.tokenUsed || now > p.expiresAt) return false
+        p.b = b
+        p.tokenUsed = true
+        deviceToPair[b.sign] = pairId
+        return true
+    }
+
+    override fun confirm(pairId: String, signPub: String): Boolean {
+        val p = pairs[pairId] ?: return false
+        if (!p.owns(signPub)) return false
+        p.active = true
+        return true
+    }
+
+    override fun remove(pairId: String) {
+        val p = pairs.remove(pairId) ?: return
+        deviceToPair.remove(p.a.sign)
+        p.b?.sign?.let { deviceToPair.remove(it) }
+        queues.remove(p.a.sign)
+        p.b?.sign?.let { queues.remove(it) }
+        fcmTokens.remove(p.a.sign)
+        p.b?.sign?.let { fcmTokens.remove(it) }
+    }
+
+    override fun enqueue(peerSignPub: String, env: Envelope): Enq {
+        val q = queues.computeIfAbsent(peerSignPub) { ConcurrentHashMap() }
+        if (q.containsKey(env.id)) return Enq.DUP
+        if (q.size >= 500) return Enq.FULL
+        q[env.id] = env
+        return Enq.OK
+    }
+
+    override fun pending(signPub: String): List<Envelope> {
+        return queues[signPub]?.values?.toList() ?: emptyList()
+    }
+
+    override fun ack(signPub: String, msgId: String) {
+        queues[signPub]?.remove(msgId)
+    }
+
+    override fun setFcm(signPub: String, token: String) {
+        fcmTokens[signPub] = token
+    }
+
+    override fun fcm(signPub: String): String? = fcmTokens[signPub]
+
+    override fun dropFcm(signPub: String, token: String) {
+        fcmTokens.remove(signPub, token)
+    }
+}
