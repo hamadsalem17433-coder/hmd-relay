@@ -14,6 +14,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "HMD-Messenger"
-include(":app")
+if (file("app").exists()) {
+    include(":app")
+}
 include(":server")
-
