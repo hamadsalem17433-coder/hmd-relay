@@ -16,11 +16,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.time.Duration
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import kotlin.time.Duration.Companion.seconds
 
 @Serializable data class CreateReq(val pairId: String, val token: String, val signPub: String, val dhPub: String, val expiresAt: Long)
 @Serializable data class JoinReq(val pairId: String, val token: String, val signPub: String, val dhPub: String)
@@ -58,7 +58,11 @@ fun Application.module() {
     val limiter = RateLimiter(max = 30, windowMs = 60_000)
 
     install(ContentNegotiation) { json() }
-    install(WebSockets) { maxFrameSize = 1_048_576; pingPeriod = 20.seconds; timeout = 60.seconds }
+    install(WebSockets) {
+        maxFrameSize = 1_048_576
+        pingPeriod = Duration.ofSeconds(20)
+        timeout = Duration.ofSeconds(60)
+    }
 
     launch { while (isActive) { delay(60_000); runCatching { repo.cleanup() }; limiter.sweep() } }
 
@@ -120,7 +124,7 @@ fun Application.module() {
             val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
             send(Frame.Text(buildJsonObject { put("type", "challenge"); put("nonce", b64(nonce)) }.toString()))
 
-            val auth = (withTimeoutOrNull(10.seconds) { incoming.receive() } as? Frame.Text)
+            val auth = (withTimeoutOrNull(10_000L) { incoming.receive() } as? Frame.Text)
                 ?.let { runCatching { Json.parseToJsonElement(it.readText()).jsonObject }.getOrNull() }
             val me = auth?.get("signPub")?.jsonPrimitive?.contentOrNull
             val sig = auth?.get("sig")?.jsonPrimitive?.contentOrNull
