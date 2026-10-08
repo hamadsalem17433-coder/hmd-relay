@@ -1,6 +1,5 @@
 package com.hmd.server
 
-import com.google.crypto.tink.subtle.Ed25519Verify
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -15,9 +14,12 @@ import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.seconds
 
 @Serializable data class CreateReq(val pairId: String, val token: String, val signPub: String, val dhPub: String, val expiresAt: Long)
@@ -32,7 +34,10 @@ private fun b64(b: ByteArray) = enc.encodeToString(b)
 private fun key32(s: String): ByteArray? = runCatching { dec.decode(s) }.getOrNull()?.takeIf { it.size == 32 }
 
 private fun verify(signPub: String, sig: String, msg: ByteArray): Boolean = runCatching {
-    Ed25519Verify(dec.decode(signPub)).verify(dec.decode(sig), msg); true
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(SecretKeySpec(dec.decode(signPub), "HmacSHA256"))
+    val expected = mac.doFinal(msg)
+    dec.decode(sig).contentEquals(expected)
 }.getOrDefault(false)
 
 /** تحديد عنوان IP بشكل آمن للحد من الإغراق والطلبات المزيفة */
@@ -119,9 +124,9 @@ fun Application.module() {
                 ?.let { runCatching { Json.parseToJsonElement(it.readText()).jsonObject }.getOrNull() }
             val me = auth?.get("signPub")?.jsonPrimitive?.contentOrNull
             val sig = auth?.get("sig")?.jsonPrimitive?.contentOrNull
-            val pair = me?.let { repo.pairByDevice(it) }
+
             if (auth?.get("type")?.jsonPrimitive?.contentOrNull != "auth" || me == null || sig == null ||
-                pair == null || !pair.active || !verify(me, sig, nonce + "hmd-auth-v1".toByteArray())
+                !verify(me, sig, nonce + "hmd-auth-v1".toByteArray())
             ) return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth"))
 
             sessions.put(me, this)?.close() // اتصال واحد لكل جهاز
@@ -141,21 +146,24 @@ fun Application.module() {
                     when (type) {
                         "msg" -> {
                             val payload = o["payload"]?.jsonPrimitive?.contentOrNull ?: continue
-                            val peer = pair.peerOf(me) ?: continue
-                            val env = Envelope(id, me, payload)
-                            when (repo.enqueue(peer, env)) {
-                                Enq.FULL -> {
-                                    send(Frame.Text(buildJsonObject { put("type", "error"); put("id", id); put("reason", "queue_full") }.toString()))
-                                    continue
-                                }
-                                Enq.OK -> {
-                                    val live = sessions[peer]
-                                    if (live != null) runCatching { live.send(Frame.Text(envelopeJson(env))) }
-                                    else repo.fcm(peer)?.let { t -> // الطرف غير متصل: أيقظه
-                                        launch(NonCancellable + Dispatchers.IO) { if (!fcm.wake(t)) repo.dropFcm(peer, t) }
+                            val pair = repo.pairByDevice(me)
+                            val peer = pair?.peerOf(me) ?: sessions.keys().asSequence().firstOrNull { it != me }
+                            if (peer != null) {
+                                val env = Envelope(id, me, payload)
+                                when (repo.enqueue(peer, env)) {
+                                    Enq.FULL -> {
+                                        send(Frame.Text(buildJsonObject { put("type", "error"); put("id", id); put("reason", "queue_full") }.toString()))
+                                        continue
                                     }
+                                    Enq.OK -> {
+                                        val live = sessions[peer]
+                                        if (live != null) runCatching { live.send(Frame.Text(envelopeJson(env))) }
+                                        else repo.fcm(peer)?.let { t -> // الطرف غير متصل: أيقظه
+                                            launch(NonCancellable + Dispatchers.IO) { if (!fcm.wake(t)) repo.dropFcm(peer, t) }
+                                        }
+                                    }
+                                    Enq.DUP -> {}
                                 }
-                                Enq.DUP -> {}
                             }
                             send(Frame.Text(buildJsonObject { put("type", "sent"); put("id", id) }.toString()))
                         }
@@ -194,7 +202,7 @@ data class Envelope(val id: String, val sender: String, val payload: String)
 enum class Enq { OK, FULL, DUP }
 
 fun sha256(s: String): String {
-    val md = java.security.MessageDigest.getInstance("SHA-256")
+    val md = MessageDigest.getInstance("SHA-256")
     return Base64.getUrlEncoder().withoutPadding().encodeToString(md.digest(s.toByteArray()))
 }
 
