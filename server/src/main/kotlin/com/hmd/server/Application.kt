@@ -1,223 +1,57 @@
 package com.hmd.server
 
-import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import java.security.MessageDigest
-import java.security.SecureRandom
 import java.time.Duration
-import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 
-@Serializable data class CreateReq(val pairId: String, val token: String, val signPub: String, val dhPub: String, val expiresAt: Long)
-@Serializable data class JoinReq(val pairId: String, val token: String, val signPub: String, val dhPub: String)
-@Serializable data class SignedReq(val pairId: String, val signPub: String, val sig: String)
-@Serializable data class KeysResp(val signPub: String, val dhPub: String)
-@Serializable data class ActiveResp(val active: Boolean)
+/**
+ * خادم تمرير (Relay) لهاتفين فقط.
+ *
+ * - الغرفة (room) والرمز المميّز (token) مشتقان على الهاتفين من سر الاقتران. الخادم لا يعرف السر
+ *   ولا مفتاح تشفير الرسائل، ويرى فقط حمولات مشفرة لا يستطيع فكها.
+ * - أول من يتصل بغرفة جديدة يسجّل بصمة رمزها (SHA-256). بعد ذلك لا يدخل إلا من يملك الرمز نفسه.
+ * - كل غرفة تقبل جهازين فقط.
+ * - الرسائل العادية تُخزَّن في ذاكرة الخادم حتى يؤكد الطرف الآخر استلامها (ack).
+ *   الذاكرة تضيع عند إعادة التشغيل، لذلك التطبيق يعيد إرسال أي رسالة لم يصله تأكيد استلامها.
+ * - الرسائل العابرة (eph): مكالمات وتأكيدات استلام، تُمرَّر فقط إن كان الطرف الآخر متصلًا.
+ */
 
-private val enc = Base64.getUrlEncoder().withoutPadding()
-private val dec = Base64.getUrlDecoder()
-private fun b64(b: ByteArray) = enc.encodeToString(b)
-private fun key32(s: String): ByteArray? = runCatching { dec.decode(s) }.getOrNull()?.takeIf { it.size == 32 }
+private const val MAX_PAYLOAD_CHARS = 8_000_000
+private const val MAX_QUEUE_MSGS = 500
+private const val MAX_QUEUE_BYTES = 40_000_000L
+private const val MAX_ROOMS = 1_000
+private const val ROOM_TTL_MS = 30L * 24 * 3600 * 1000
 
-private fun verify(signPub: String, sig: String, msg: ByteArray): Boolean = runCatching {
-    val mac = Mac.getInstance("HmacSHA256")
-    mac.init(SecretKeySpec(dec.decode(signPub), "HmacSHA256"))
-    val expected = mac.doFinal(msg)
-    dec.decode(sig).contentEquals(expected)
-}.getOrDefault(false)
+private val ID_RE = Regex("^[A-Za-z0-9_-]{8,64}$")
+private val B64_RE = Regex("^[A-Za-z0-9_-]{43}$")
+private val DEV_RE = Regex("^[a-f0-9]{32}$")
 
-/** تحديد عنوان IP بشكل آمن للحد من الإغراق والطلبات المزيفة */
-private fun ApplicationCall.clientIp(): String {
-    val forwarded = request.headers["X-Forwarded-For"]?.split(",")?.firstOrNull()?.trim()
-    return if (!forwarded.isNullOrBlank() && forwarded.matches(Regex("^[0-9a-fA-F:.]+$"))) forwarded
-    else request.local.remoteHost
+data class Env(val id: String, val sender: String, val payload: String)
+
+class Room(val tokenHash: ByteArray) {
+    val devices = LinkedHashSet<String>() // لا أكثر من 2، يُعدَّل داخل synchronized(room)
+    val queue = LinkedHashMap<String, Env>()
+    var bytes = 0L
+    @Volatile var lastSeen = System.currentTimeMillis()
 }
-
-fun main() {
-    embeddedServer(Netty, port = System.getenv("PORT")?.toInt() ?: 8080, module = Application::module).start(wait = true)
-}
-
-fun Application.module() {
-    val repo = createRepo()
-    val sessions = ConcurrentHashMap<String, WebSocketSession>() // signPub -> اتصال حيّ (على هذا السيرفر فقط)
-    val fcm = FcmSender()
-    val limiter = RateLimiter(max = 30, windowMs = 60_000)
-
-    install(ContentNegotiation) { json() }
-    install(WebSockets) {
-        maxFrameSize = 1_048_576
-        pingPeriod = Duration.ofSeconds(20)
-        timeout = Duration.ofSeconds(60)
-    }
-
-    launch { while (isActive) { delay(60_000); runCatching { repo.cleanup() }; limiter.sweep() } }
-
-    routing {
-        get("/health") { call.respondText("ok") }
-
-        // ---------- الاقتران ----------
-        post("/pair/create") {
-            if (!limiter.allow(call.clientIp())) return@post call.respond(HttpStatusCode.TooManyRequests)
-            val r = call.receive<CreateReq>()
-            val now = System.currentTimeMillis()
-            if (key32(r.signPub) == null || key32(r.dhPub) == null || r.pairId.length !in 16..64 ||
-                r.token.length < 20 || r.expiresAt !in now..(now + 5 * 60_000)
-            ) return@post call.respond(HttpStatusCode.BadRequest)
-            val ok = repo.createPair(r.pairId, sha256(r.token), r.expiresAt, Keys(r.signPub, r.dhPub))
-            call.respond(if (ok) HttpStatusCode.Created else HttpStatusCode.BadRequest)
-        }
-
-        post("/pair/join") {
-            if (!limiter.allow(call.clientIp())) return@post call.respond(HttpStatusCode.TooManyRequests)
-            val r = call.receive<JoinReq>()
-            val now = System.currentTimeMillis()
-            val p = repo.pair(r.pairId)
-            if (p == null || key32(r.signPub) == null || key32(r.dhPub) == null ||
-                !tokenMatches(p, r.token) || now > p.expiresAt
-            ) return@post call.respond(HttpStatusCode.BadRequest)
-            if (p.tokenUsed || !repo.join(r.pairId, Keys(r.signPub, r.dhPub), now))
-                return@post call.respond(HttpStatusCode.Conflict)
-            call.respond(KeysResp(p.a.sign, p.a.dh))
-        }
-
-        get("/pair/{id}/status") {
-            val p = call.parameters["id"]?.let { repo.pair(it) }
-            val token = call.request.headers["X-Pair-Token"]
-            if (p == null || token == null || !tokenMatches(p, token)) return@get call.respond(HttpStatusCode.NotFound)
-            val b = p.b ?: return@get call.respond(HttpStatusCode.NoContent)
-            call.respond(KeysResp(b.sign, b.dh))
-        }
-
-        post("/pair/confirm") {
-            val r = call.receive<SignedReq>()
-            val p = repo.pair(r.pairId)
-            if (p == null || !p.owns(r.signPub) || !verify(r.signPub, r.sig, "hmd-confirm-v1:${r.pairId}".toByteArray()))
-                return@post call.respond(HttpStatusCode.Forbidden)
-            call.respond(ActiveResp(repo.confirm(r.pairId, r.signPub)))
-        }
-
-        post("/pair/cancel") {
-            val r = call.receive<SignedReq>()
-            val p = repo.pair(r.pairId)
-            if (p == null || !p.owns(r.signPub) || !verify(r.signPub, r.sig, "hmd-cancel-v1:${r.pairId}".toByteArray()))
-                return@post call.respond(HttpStatusCode.Forbidden)
-            repo.remove(r.pairId)
-            call.respond(HttpStatusCode.NoContent)
-        }
-
-        // ---------- المصادقة + الـ Relay ----------
-        webSocket("/ws") {
-            val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
-            send(Frame.Text(buildJsonObject { put("type", "challenge"); put("nonce", b64(nonce)) }.toString()))
-
-            val auth = (withTimeoutOrNull(10_000L) { incoming.receive() } as? Frame.Text)
-                ?.let { runCatching { Json.parseToJsonElement(it.readText()).jsonObject }.getOrNull() }
-            val me = auth?.get("signPub")?.jsonPrimitive?.contentOrNull
-            val sig = auth?.get("sig")?.jsonPrimitive?.contentOrNull
-
-            if (auth?.get("type")?.jsonPrimitive?.contentOrNull != "auth" || me == null || sig == null ||
-                !verify(me, sig, nonce + "hmd-auth-v1".toByteArray())
-            ) return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth"))
-
-            sessions.put(me, this)?.close() // اتصال واحد لكل جهاز
-            send(Frame.Text("""{"type":"ready"}"""))
-            repo.pending(me).forEach { send(Frame.Text(envelopeJson(it))) }
-
-            try {
-                for (frame in incoming) {
-                    if (frame !is Frame.Text) continue
-                    val o = runCatching { Json.parseToJsonElement(frame.readText()).jsonObject }.getOrNull() ?: continue
-                    val type = o["type"]?.jsonPrimitive?.contentOrNull
-                    if (type == "fcm") {
-                        o["token"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length in 20..4096 }?.let { repo.setFcm(me, it) }
-                        continue
-                    }
-                    val id = o["id"]?.jsonPrimitive?.contentOrNull ?: continue
-                    when (type) {
-                        "msg" -> {
-                            val payload = o["payload"]?.jsonPrimitive?.contentOrNull ?: continue
-                            val pair = repo.pairByDevice(me)
-                            val peer = pair?.peerOf(me) ?: sessions.keys().asSequence().firstOrNull { it != me }
-                            if (peer != null) {
-                                val env = Envelope(id, me, payload)
-                                when (repo.enqueue(peer, env)) {
-                                    Enq.FULL -> {
-                                        send(Frame.Text(buildJsonObject { put("type", "error"); put("id", id); put("reason", "queue_full") }.toString()))
-                                        continue
-                                    }
-                                    Enq.OK -> {
-                                        val live = sessions[peer]
-                                        if (live != null) runCatching { live.send(Frame.Text(envelopeJson(env))) }
-                                        else repo.fcm(peer)?.let { t -> // الطرف غير متصل: أيقظه
-                                            launch(NonCancellable + Dispatchers.IO) { if (!fcm.wake(t)) repo.dropFcm(peer, t) }
-                                        }
-                                    }
-                                    Enq.DUP -> {}
-                                }
-                            }
-                            send(Frame.Text(buildJsonObject { put("type", "sent"); put("id", id) }.toString()))
-                        }
-                        "ack" -> repo.ack(me, id)
-                    }
-                }
-            } finally {
-                sessions.remove(me, this)
-            }
-        }
-    }
-}
-
-private fun envelopeJson(e: Envelope) =
-    buildJsonObject { put("type", "msg"); put("id", e.id); put("payload", e.payload) }.toString()
-
-// ---------- Helper Data Structures & In-Memory Repository ----------
-
-data class Keys(val sign: String, val dh: String)
-
-data class PairData(
-    val id: String,
-    val tokenHash: String,
-    val expiresAt: Long,
-    val a: Keys,
-    var b: Keys? = null,
-    var active: Boolean = false,
-    var tokenUsed: Boolean = false
-) {
-    fun owns(signPub: String): Boolean = a.sign == signPub || b?.sign == signPub
-    fun peerOf(signPub: String): String? = if (a.sign == signPub) b?.sign else if (b?.sign == signPub) a.sign else null
-}
-
-data class Envelope(val id: String, val sender: String, val payload: String)
 
 enum class Enq { OK, FULL, DUP }
-
-fun sha256(s: String): String {
-    val md = MessageDigest.getInstance("SHA-256")
-    return Base64.getUrlEncoder().withoutPadding().encodeToString(md.digest(s.toByteArray()))
-}
-
-fun tokenMatches(p: PairData, token: String): Boolean = p.tokenHash == sha256(token)
 
 class RateLimiter(private val max: Int, private val windowMs: Long) {
     private val requests = ConcurrentHashMap<String, MutableList<Long>>()
 
-    fun allow(ip: String): Boolean {
+    fun allow(key: String): Boolean {
         val now = System.currentTimeMillis()
-        val list = requests.computeIfAbsent(ip) { mutableListOf() }
+        val list = requests.computeIfAbsent(key) { mutableListOf() }
         synchronized(list) {
             list.removeAll { now - it > windowMs }
             if (list.size >= max) return false
@@ -229,114 +63,148 @@ class RateLimiter(private val max: Int, private val windowMs: Long) {
     fun sweep() {
         val now = System.currentTimeMillis()
         requests.entries.removeIf { (_, list) ->
-            synchronized(list) {
-                list.removeAll { now - it > windowMs }
-                list.isEmpty()
-            }
+            synchronized(list) { list.removeAll { now - it > windowMs }; list.isEmpty() }
         }
     }
 }
 
-interface ServerRepo {
-    fun cleanup()
-    fun createPair(pairId: String, tokenHash: String, expiresAt: Long, a: Keys): Boolean
-    fun pair(pairId: String): PairData?
-    fun pairByDevice(signPub: String): PairData?
-    fun join(pairId: String, b: Keys, now: Long): Boolean
-    fun confirm(pairId: String, signPub: String): Boolean
-    fun remove(pairId: String)
-    fun enqueue(peerSignPub: String, env: Envelope): Enq
-    fun pending(signPub: String): List<Envelope>
-    fun ack(signPub: String, msgId: String)
-    fun setFcm(signPub: String, token: String)
-    fun fcm(signPub: String): String?
-    fun dropFcm(signPub: String, token: String)
+private fun JsonObject.str(k: String): String? = this[k]?.jsonPrimitive?.contentOrNull
+private fun envJson(e: Env) =
+    buildJsonObject { put("type", "msg"); put("id", e.id); put("payload", e.payload) }.toString()
+
+fun main() {
+    embeddedServer(Netty, port = System.getenv("PORT")?.toInt() ?: 8080, module = Application::module)
+        .start(wait = true)
 }
 
-fun createRepo(): ServerRepo = InMemRepo()
+fun Application.module() {
+    val rooms = ConcurrentHashMap<String, Room>()
+    val sessions = ConcurrentHashMap<String, WebSocketSession>() // "room|device" -> اتصال حيّ
+    val fcmTokens = ConcurrentHashMap<String, String>()
+    val fcm = FcmSender()
+    val connLimiter = RateLimiter(max = 30, windowMs = 60_000) // محاولات اتصال لكل عنوان IP
 
-private class InMemRepo : ServerRepo {
-    private val pairs = ConcurrentHashMap<String, PairData>()
-    private val deviceToPair = ConcurrentHashMap<String, String>()
-    private val queues = ConcurrentHashMap<String, ConcurrentHashMap<String, Envelope>>()
-    private val fcmTokens = ConcurrentHashMap<String, String>()
+    install(WebSockets) {
+        maxFrameSize = 12_000_000L
+        pingPeriod = Duration.ofSeconds(20)
+        timeout = Duration.ofSeconds(60)
+    }
 
-    override fun cleanup() {
-        val now = System.currentTimeMillis()
-        pairs.entries.removeIf { (_, p) ->
-            val expired = !p.active && now > p.expiresAt
-            if (expired) {
-                deviceToPair.remove(p.a.sign)
-                p.b?.sign?.let { deviceToPair.remove(it) }
+    launch {
+        while (isActive) {
+            delay(600_000)
+            connLimiter.sweep()
+            val now = System.currentTimeMillis()
+            rooms.entries.removeIf { (id, r) ->
+                now - r.lastSeen > ROOM_TTL_MS && sessions.keys.none { it.startsWith("$id|") }
             }
-            expired
         }
     }
 
-    override fun createPair(pairId: String, tokenHash: String, expiresAt: Long, a: Keys): Boolean {
-        if (pairs.containsKey(pairId)) return false
-        val p = PairData(pairId, tokenHash, expiresAt, a)
-        pairs[pairId] = p
-        deviceToPair[a.sign] = pairId
-        return true
-    }
+    routing {
+        get("/health") { call.respondText("ok") }
 
-    override fun pair(pairId: String): PairData? = pairs[pairId]
+        webSocket("/ws") {
+            val fwd = call.request.headers["X-Forwarded-For"]?.substringBefore(',')?.trim()
+            val ip = if (!fwd.isNullOrBlank() && fwd.matches(Regex("^[0-9a-fA-F:.]+$"))) fwd else call.request.local.remoteHost
+            if (!connLimiter.allow(ip)) return@webSocket close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "rate"))
 
-    override fun pairByDevice(signPub: String): PairData? {
-        val pid = deviceToPair[signPub] ?: return null
-        return pairs[pid]
-    }
+            val auth = (withTimeoutOrNull(10_000L) { incoming.receive() } as? Frame.Text)
+                ?.let { runCatching { Json.parseToJsonElement(it.readText()).jsonObject }.getOrNull() }
+            val roomId = auth?.str("room")
+            val token = auth?.str("token")
+            val device = auth?.str("device")
+            if (auth?.str("type") != "auth" || roomId == null || token == null || device == null ||
+                !B64_RE.matches(roomId) || !B64_RE.matches(token) || !DEV_RE.matches(device)
+            ) return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth"))
 
-    override fun join(pairId: String, b: Keys, now: Long): Boolean {
-        val p = pairs[pairId] ?: return false
-        if (p.tokenUsed || now > p.expiresAt) return false
-        p.b = b
-        p.tokenUsed = true
-        deviceToPair[b.sign] = pairId
-        return true
-    }
+            val th = MessageDigest.getInstance("SHA-256").digest(token.toByteArray())
+            val room = rooms[roomId] ?: run {
+                if (rooms.size >= MAX_ROOMS) return@webSocket close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "full"))
+                rooms.computeIfAbsent(roomId) { Room(th) }
+            }
+            if (!MessageDigest.isEqual(room.tokenHash, th)) {
+                return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth"))
+            }
+            val admitted = synchronized(room) {
+                when {
+                    room.devices.contains(device) -> true
+                    room.devices.size < 2 -> { room.devices.add(device); true }
+                    else -> false
+                }
+            }
+            if (!admitted) return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "room_full"))
 
-    override fun confirm(pairId: String, signPub: String): Boolean {
-        val p = pairs[pairId] ?: return false
-        if (!p.owns(signPub)) return false
-        p.active = true
-        return true
-    }
+            val me = "$roomId|$device"
+            room.lastSeen = System.currentTimeMillis()
+            sessions.put(me, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced")) // اتصال واحد لكل جهاز
+            send(Frame.Text("""{"type":"ready"}"""))
+            val pending = synchronized(room) { room.queue.values.filter { it.sender != device } }
+            pending.forEach { send(Frame.Text(envJson(it))) }
 
-    override fun remove(pairId: String) {
-        val p = pairs.remove(pairId) ?: return
-        deviceToPair.remove(p.a.sign)
-        p.b?.sign?.let { deviceToPair.remove(it) }
-        queues.remove(p.a.sign)
-        p.b?.sign?.let { queues.remove(it) }
-        fcmTokens.remove(p.a.sign)
-        p.b?.sign?.let { fcmTokens.remove(it) }
-    }
+            var winStart = System.currentTimeMillis()
+            var winCount = 0
+            try {
+                for (frame in incoming) {
+                    if (frame !is Frame.Text) continue
+                    val now = System.currentTimeMillis()
+                    if (now - winStart > 10_000) { winStart = now; winCount = 0 }
+                    if (++winCount > 1_500) { // حماية من الإغراق (المكالمات تحتاج عشرات الرسائل في الثانية)
+                        close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "flood")); break
+                    }
+                    val o = runCatching { Json.parseToJsonElement(frame.readText()).jsonObject }.getOrNull() ?: continue
+                    room.lastSeen = now
 
-    override fun enqueue(peerSignPub: String, env: Envelope): Enq {
-        val q = queues.computeIfAbsent(peerSignPub) { ConcurrentHashMap() }
-        if (q.containsKey(env.id)) return Enq.DUP
-        if (q.size >= 500) return Enq.FULL
-        q[env.id] = env
-        return Enq.OK
-    }
+                    when (o.str("type")) {
+                        "fcm" -> o.str("token")?.takeIf { it.length in 20..4096 }?.let { fcmTokens[me] = it }
 
-    override fun pending(signPub: String): List<Envelope> {
-        return queues[signPub]?.values?.toList() ?: emptyList()
-    }
+                        "msg" -> {
+                            val id = o.str("id")?.takeIf { ID_RE.matches(it) } ?: continue
+                            val payload = o.str("payload")?.takeIf { it.isNotEmpty() && it.length <= MAX_PAYLOAD_CHARS } ?: continue
+                            val eph = o["eph"]?.jsonPrimitive?.booleanOrNull == true
+                            val peer = synchronized(room) { room.devices.firstOrNull { it != device } }
+                            val env = Env(id, device, payload)
 
-    override fun ack(signPub: String, msgId: String) {
-        queues[signPub]?.remove(msgId)
-    }
+                            if (eph) { // عابرة: تمرَّر إن كان الطرف متصلًا وإلا تُهمل
+                                peer?.let { sessions["$roomId|$it"] }?.let { s -> runCatching { s.send(Frame.Text(envJson(env))) } }
+                                continue
+                            }
 
-    override fun setFcm(signPub: String, token: String) {
-        fcmTokens[signPub] = token
-    }
+                            val res = synchronized(room) {
+                                when {
+                                    room.queue.containsKey(id) -> Enq.DUP
+                                    room.queue.size >= MAX_QUEUE_MSGS || room.bytes + payload.length > MAX_QUEUE_BYTES -> Enq.FULL
+                                    else -> { room.queue[id] = env; room.bytes += payload.length; Enq.OK }
+                                }
+                            }
+                            when (res) {
+                                Enq.FULL -> {
+                                    send(Frame.Text(buildJsonObject { put("type", "error"); put("id", id); put("reason", "queue_full") }.toString()))
+                                    continue
+                                }
+                                Enq.OK -> if (peer != null) {
+                                    val live = sessions["$roomId|$peer"]
+                                    if (live != null) runCatching { live.send(Frame.Text(envJson(env))) }
+                                    else fcmTokens["$roomId|$peer"]?.let { t -> // الطرف غير متصل: أيقظه بإشعار بلا محتوى
+                                        launch(NonCancellable + Dispatchers.IO) { if (!fcm.wake(t)) fcmTokens.remove("$roomId|$peer", t) }
+                                    }
+                                }
+                                Enq.DUP -> {}
+                            }
+                            send(Frame.Text(buildJsonObject { put("type", "sent"); put("id", id) }.toString()))
+                        }
 
-    override fun fcm(signPub: String): String? = fcmTokens[signPub]
-
-    override fun dropFcm(signPub: String, token: String) {
-        fcmTokens.remove(signPub, token)
+                        "ack" -> o.str("id")?.let { id ->
+                            synchronized(room) {
+                                val e = room.queue[id]
+                                if (e != null && e.sender != device) { room.queue.remove(id); room.bytes -= e.payload.length }
+                            }
+                        }
+                    }
+                }
+            } finally {
+                sessions.remove(me, this)
+            }
+        }
     }
 }
