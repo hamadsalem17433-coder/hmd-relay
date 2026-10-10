@@ -138,7 +138,11 @@ fun Application.module() {
             val me = "$roomId|$device"
             room.lastSeen = System.currentTimeMillis()
             sessions.put(me, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced")) // اتصال واحد لكل جهاز
-            send(Frame.Text("""{"type":"ready"}"""))
+            val peerId = synchronized(room) { room.devices.firstOrNull { it != device } }
+            val peerLive = peerId?.let { sessions["$roomId|$it"] }
+            send(Frame.Text(buildJsonObject { put("type", "ready"); put("peer", peerLive != null) }.toString()))
+            // أبلغ الشريك (إن كان متصلًا) أنني صرت متصلًا
+            peerLive?.let { runCatching { it.send(Frame.Text("""{"type":"presence","online":true}""")) } }
             val pending = synchronized(room) { room.queue.values.filter { it.sender != device } }
             pending.forEach { send(Frame.Text(envJson(it))) }
 
@@ -203,7 +207,15 @@ fun Application.module() {
                     }
                 }
             } finally {
-                sessions.remove(me, this)
+                if (sessions.remove(me, this)) {
+                    // أبلغ الشريك أنني انقطعت (NonCancellable: لأن هذه الكوروتين ملغاة عند إغلاق الاتصال)
+                    withContext(NonCancellable) {
+                        val pid = synchronized(room) { room.devices.firstOrNull { it != device } }
+                        pid?.let { sessions["$roomId|$it"] }?.let {
+                            runCatching { it.send(Frame.Text("""{"type":"presence","online":false}""")) }
+                        }
+                    }
+                }
             }
         }
     }
