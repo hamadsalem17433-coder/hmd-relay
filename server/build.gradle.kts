@@ -8,6 +8,10 @@ plugins {
 group = "com.hmd"
 version = "1.0.0"
 
+kotlin {
+    jvmToolchain(17)
+}
+
 dependencies {
     val ktorVersion = "2.3.8"
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
@@ -23,8 +27,4 @@ dependencies {
 
 application {
     mainClass.set("com.hmd.server.ApplicationKt")
-}
-
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions.jvmTarget = "17"
 }
