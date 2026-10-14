@@ -26,9 +26,22 @@ class FcmSender {
 
     /** يرجع false فقط إذا كان الرمز غير صالح ويجب حذفه. */
     fun wake(token: String): Boolean {
-        if (!enabled) return true
+        if (!enabled) {
+            println("[FCM] FCM is disabled (missing project ID or service account JSON)")
+            return true
+        }
         return try {
             creds!!.refreshIfExpired()
+            val accessToken = creds.accessToken?.tokenValue ?: run {
+                creds.refresh()
+                creds.accessToken?.tokenValue
+            }
+
+            if (accessToken == null) {
+                println("[FCM] Failed to obtain valid access token from GoogleCredentials")
+                return true
+            }
+
             val body = buildJsonObject {
                 put("message", buildJsonObject {
                     put("token", token)
@@ -49,12 +62,18 @@ class FcmSender {
                     })
                 })
             }.toString()
+
             val req = HttpRequest.newBuilder(URI("https://fcm.googleapis.com/v1/projects/$projectId/messages:send"))
-                .header("Authorization", "Bearer ${creds.accessToken.tokenValue}")
+                .header("Authorization", "Bearer $accessToken")
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build()
-            http.send(req, HttpResponse.BodyHandlers.discarding()).statusCode() != 404
+
+            val res = http.send(req, HttpResponse.BodyHandlers.ofString())
+            println("[FCM] Push response status: ${res.statusCode()}, body: ${res.body()}")
+            res.statusCode() != 404
         } catch (e: Exception) {
+            println("[FCM] Error sending FCM push notification: ${e.message}")
+            e.printStackTrace()
             true
         }
     }
