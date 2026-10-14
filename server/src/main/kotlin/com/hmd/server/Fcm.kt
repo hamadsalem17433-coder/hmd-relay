@@ -9,9 +9,8 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
 /**
- * يرسل إشعار "إيقاظ" فقط (data: wake=1) بدون أي محتوى للرسالة.
+ * يرسل إشعار إيقاظ منبثق (Notification + Data) لضمان قيام أندرويد بعرض الإشعار فوراً حتى لو كان التطبيق مغلقاً.
  * متغيرات البيئة: FCM_PROJECT_ID و FCM_SERVICE_ACCOUNT_JSON (نص ملف الـ service account كاملًا).
- * إن لم تُضبط يعمل السيرفر بدون إشعارات.
  */
 class FcmSender {
     private val projectId = System.getenv("FCM_PROJECT_ID")
@@ -22,6 +21,7 @@ class FcmSender {
         }.getOrNull()
     }
     private val http = HttpClient.newHttpClient()
+
     val enabled get() = projectId != null && creds != null
 
     /** يرجع false فقط إذا كان الرمز غير صالح ويجب حذفه. */
@@ -32,8 +32,21 @@ class FcmSender {
             val body = buildJsonObject {
                 put("message", buildJsonObject {
                     put("token", token)
-                    put("android", buildJsonObject { put("priority", "HIGH") })
-                    put("data", buildJsonObject { put("wake", "1") })
+                    put("notification", buildJsonObject {
+                        put("title", "HMD Messenger")
+                        put("body", "رسالة جديدة")
+                    })
+                    put("android", buildJsonObject {
+                        put("priority", "HIGH")
+                        put("notification", buildJsonObject {
+                            put("channel_id", "messages")
+                            put("sound", "default")
+                            put("notification_priority", "PRIORITY_MAX")
+                        })
+                    })
+                    put("data", buildJsonObject {
+                        put("wake", "1")
+                    })
                 })
             }.toString()
             val req = HttpRequest.newBuilder(URI("https://fcm.googleapis.com/v1/projects/$projectId/messages:send"))
@@ -41,6 +54,8 @@ class FcmSender {
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build()
             http.send(req, HttpResponse.BodyHandlers.discarding()).statusCode() != 404
-        } catch (e: Exception) { true }
+        } catch (e: Exception) {
+            true
+        }
     }
 }
