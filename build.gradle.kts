@@ -12,6 +12,11 @@ repositories {
     mavenCentral()
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
 dependencies {
     val ktorVersion = "2.3.8"
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
@@ -26,4 +31,14 @@ dependencies {
 
 application {
     mainClass.set("com.hmd.server.ApplicationKt")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+tasks.withType<JavaCompile> {
+    options.release.set(17)
 }
