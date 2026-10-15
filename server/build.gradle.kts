@@ -8,8 +8,9 @@ plugins {
 group = "com.hmd"
 version = "1.0.0"
 
-kotlin {
-    jvmToolchain(17)
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
 
 dependencies {
@@ -27,4 +28,8 @@ dependencies {
 
 application {
     mainClass.set("com.hmd.server.ApplicationKt")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    kotlinOptions.jvmTarget = "17"
 }
