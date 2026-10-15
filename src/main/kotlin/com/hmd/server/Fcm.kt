@@ -30,11 +30,12 @@ class FcmSender {
             println("[FCM] FCM is disabled (missing project ID or service account JSON)")
             return true
         }
+        val c = creds ?: return true
         return try {
-            creds!!.refreshIfExpired()
-            val accessToken = creds.accessToken?.tokenValue ?: run {
-                creds.refresh()
-                creds.accessToken?.tokenValue
+            c.refreshIfExpired()
+            val accessToken = c.accessToken?.tokenValue ?: run {
+                c.refresh()
+                c.accessToken?.tokenValue
             }
 
             if (accessToken == null) {
