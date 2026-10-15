@@ -1,5 +1,5 @@
 # ---------- Stage 1: Build Shadow JAR ----------
-FROM gradle:8.3-jdk17 AS build
+FROM gradle:8.5-jdk17 AS build
 WORKDIR /app
 COPY . .
 RUN chmod +x gradlew && ./gradlew shadowJar --no-daemon --stacktrace
