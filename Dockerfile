@@ -2,7 +2,7 @@
 FROM gradle:8.5-jdk17 AS build
 WORKDIR /app
 COPY . .
-RUN chmod +x gradlew && ./gradlew shadowJar --no-daemon --stacktrace
+RUN gradle shadowJar --no-daemon
 
 # ---------- Stage 2: Runtime Container ----------
 FROM eclipse-temurin:17-jre-alpine
