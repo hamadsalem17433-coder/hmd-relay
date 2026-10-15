@@ -21,7 +21,6 @@ import java.util.concurrent.ConcurrentHashMap
  * - أول من يتصل بغرفة جديدة يسجّل بصمة رمزها (SHA-256). بعد ذلك لا يدخل إلا من يملك الرمز نفسه.
  * - كل غرفة تقبل جهازين فقط.
  * - الرسائل العادية تُخزَّن في ذاكرة الخادم حتى يؤكد الطرف الآخر استلامها (ack).
- *   الذاكرة تضيع عند إعادة التشغيل، لذلك التطبيق يعيد إرسال أي رسالة لم يصله تأكيد استلامها.
  * - الرسائل العابرة (eph): مكالمات وتأكيدات استلام، تُمرَّر فقط إن كان الطرف الآخر متصلًا.
  */
 
@@ -38,7 +37,7 @@ private val DEV_RE = Regex("^[a-f0-9]{32}$")
 data class Env(val id: String, val sender: String, val payload: String)
 
 class Room(val tokenHash: ByteArray) {
-    val devices = LinkedHashSet<String>() // لا أكثر من 2، يُعدَّل داخل synchronized(room)
+    val devices = LinkedHashSet<String>()
     val queue = LinkedHashMap<String, Env>()
     var bytes = 0L
     @Volatile var lastSeen = System.currentTimeMillis()
@@ -82,7 +81,7 @@ fun Application.module() {
     val sessions = ConcurrentHashMap<String, WebSocketSession>() // "room|device" -> اتصال حيّ
     val fcmTokens = ConcurrentHashMap<String, String>()
     val fcm = FcmSender()
-    val connLimiter = RateLimiter(max = 30, windowMs = 60_000) // محاولات اتصال لكل عنوان IP
+    val connLimiter = RateLimiter(max = 30, windowMs = 60_000)
 
     install(WebSockets) {
         maxFrameSize = 12_000_000L
@@ -137,11 +136,10 @@ fun Application.module() {
 
             val me = "$roomId|$device"
             room.lastSeen = System.currentTimeMillis()
-            sessions.put(me, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced")) // اتصال واحد لكل جهاز
+            sessions.put(me, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced"))
             val peerId = synchronized(room) { room.devices.firstOrNull { it != device } }
             val peerLive = peerId?.let { sessions["$roomId|$it"] }
             send(Frame.Text(buildJsonObject { put("type", "ready"); put("peer", peerLive != null) }.toString()))
-            // أبلغ الشريك (إن كان متصلًا) أنني صرت متصلًا
             peerLive?.let { runCatching { it.send(Frame.Text("""{"type":"presence","online":true}""")) } }
             val pending = synchronized(room) { room.queue.values.filter { it.sender != device } }
             pending.forEach { send(Frame.Text(envJson(it))) }
@@ -153,7 +151,7 @@ fun Application.module() {
                     if (frame !is Frame.Text) continue
                     val now = System.currentTimeMillis()
                     if (now - winStart > 10_000) { winStart = now; winCount = 0 }
-                    if (++winCount > 1_500) { // حماية من الإغراق (المكالمات تحتاج عشرات الرسائل في الثانية)
+                    if (++winCount > 1_500) {
                         close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "flood")); break
                     }
                     val o = runCatching { Json.parseToJsonElement(frame.readText()).jsonObject }.getOrNull() ?: continue
@@ -169,7 +167,7 @@ fun Application.module() {
                             val peer = synchronized(room) { room.devices.firstOrNull { it != device } }
                             val env = Env(id, device, payload)
 
-                            if (eph) { // عابرة: تمرَّر إن كان الطرف متصلًا وإلا تُهمل
+                            if (eph) {
                                 peer?.let { sessions["$roomId|$it"] }?.let { s -> runCatching { s.send(Frame.Text(envJson(env))) } }
                                 continue
                             }
@@ -189,7 +187,7 @@ fun Application.module() {
                                 Enq.OK -> if (peer != null) {
                                     val live = sessions["$roomId|$peer"]
                                     if (live != null) runCatching { live.send(Frame.Text(envJson(env))) }
-                                    else fcmTokens["$roomId|$peer"]?.let { t -> // الطرف غير متصل: أيقظه بإشعار بلا محتوى
+                                    else fcmTokens["$roomId|$peer"]?.let { t ->
                                         launch(NonCancellable + Dispatchers.IO) { if (!fcm.wake(t)) fcmTokens.remove("$roomId|$peer", t) }
                                     }
                                 }
@@ -208,7 +206,6 @@ fun Application.module() {
                 }
             } finally {
                 if (sessions.remove(me, this)) {
-                    // أبلغ الشريك أنني انقطعت (NonCancellable: لأن هذه الكوروتين ملغاة عند إغلاق الاتصال)
                     withContext(NonCancellable) {
                         val pid = synchronized(room) { room.devices.firstOrNull { it != device } }
                         pid?.let { sessions["$roomId|$it"] }?.let {

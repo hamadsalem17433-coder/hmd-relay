@@ -6,4 +6,3 @@ pluginManagement {
 }
 
 rootProject.name = "hmd-relay"
-include(":server")
