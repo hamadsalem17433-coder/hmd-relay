@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
  * - أول من يتصل بغرفة جديدة يسجّل بصمة رمزها (SHA-256). بعد ذلك لا يدخل إلا من يملك الرمز نفسه.
  * - كل غرفة تقبل جهازين فقط.
  * - الرسائل العادية تُخزَّن في ذاكرة الخادم حتى يؤكد الطرف الآخر استلامها (ack).
- * - الرسائل العابرة (eph): مكالمات وتأكيدات استلام، تُمرَّر فقط إن كان الطرف الآخر متصلًا.
+ * - الرسائل العابرة (eph): مكالمات وتأكيدات استلام، تُمرَّر إن كان الطرف الآخر متصلًا أو تُرسل إشارة إيقاظ FCM.
  */
 
 private const val MAX_PAYLOAD_CHARS = 8_000_000
@@ -168,7 +168,17 @@ fun Application.module() {
                             val env = Env(id, device, payload)
 
                             if (eph) {
-                                peer?.let { sessions["$roomId|$it"] }?.let { s -> runCatching { s.send(Frame.Text(envJson(env))) } }
+                                if (peer != null) {
+                                    val s = sessions["$roomId|$peer"]
+                                    if (s != null) {
+                                        runCatching { s.send(Frame.Text(envJson(env))) }
+                                    } else {
+                                        // الشريك غير متصل حالياً: أرسل إشعار إيقاظ FCM للتنبيه بالمكالمة أو الإشارة العابرة!
+                                        fcmTokens["$roomId|$peer"]?.let { t ->
+                                            launch(NonCancellable + Dispatchers.IO) { if (!fcm.wake(t)) fcmTokens.remove("$roomId|$peer", t) }
+                                        }
+                                    }
+                                }
                                 continue
                             }
 
