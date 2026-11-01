@@ -43,6 +43,7 @@ class FcmSender {
 
     private val http = HttpClient.newHttpClient()
 
+<<<<<<< Updated upstream
     val enabled get() = !projectId.isNullOrEmpty() && creds != null
 
     init {
@@ -50,6 +51,37 @@ class FcmSender {
     }
 
     /** يرجع false فقط إذا كان الرمز غير صالح (404 / UNREGISTERED) ويجب حذفه. */
+=======
+    private val tokenLock = Any()
+    @Volatile private var cachedAccessToken: String? = null
+    @Volatile private var tokenExpiryTime: Long = 0L
+
+    val enabled get() = projectId != null && creds != null
+
+    private fun getValidAccessToken(c: GoogleCredentials): String? {
+        val now = System.currentTimeMillis()
+        if (cachedAccessToken != null && now < tokenExpiryTime - 60_000) {
+            return cachedAccessToken
+        }
+        synchronized(tokenLock) {
+            val currentNow = System.currentTimeMillis()
+            if (cachedAccessToken != null && currentNow < tokenExpiryTime - 60_000) {
+                return cachedAccessToken
+            }
+            c.refreshIfExpired()
+            val token = c.accessToken?.tokenValue ?: run {
+                c.refresh()
+                c.accessToken?.tokenValue
+            }
+            val exp = c.accessToken?.expirationTime?.time ?: (currentNow + 3600_000)
+            cachedAccessToken = token
+            tokenExpiryTime = exp
+            return token
+        }
+    }
+
+    /** يرجع false فقط إذا كان الرمز غير صالح ويجب حذفه. */
+>>>>>>> Stashed changes
     fun wake(token: String): Boolean {
         if (!enabled) {
             println("[FCM] FCM is disabled (missing FCM_PROJECT_ID or FCM_SERVICE_ACCOUNT_JSON)")
@@ -57,6 +89,7 @@ class FcmSender {
         }
         val c = creds ?: return true
         return try {
+<<<<<<< Updated upstream
             synchronized(c) {
                 c.refreshIfExpired()
             }
@@ -68,6 +101,9 @@ class FcmSender {
             }
 
             if (accessToken == null) {
+=======
+            val accessToken = getValidAccessToken(c) ?: run {
+>>>>>>> Stashed changes
                 println("[FCM] Failed to obtain valid access token from GoogleCredentials")
                 return true
             }

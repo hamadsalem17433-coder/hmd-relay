@@ -95,7 +95,11 @@ fun Application.module() {
             connLimiter.sweep()
             val now = System.currentTimeMillis()
             rooms.entries.removeIf { (id, r) ->
-                now - r.lastSeen > ROOM_TTL_MS && sessions.keys.none { it.startsWith("$id|") }
+                val expired = now - r.lastSeen > ROOM_TTL_MS && sessions.keys.none { it.startsWith("$id|") }
+                if (expired) {
+                    r.devices.forEach { device -> fcmTokens.remove("$id|$device") }
+                }
+                expired
             }
         }
     }
