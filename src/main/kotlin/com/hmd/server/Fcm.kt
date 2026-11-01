@@ -43,20 +43,15 @@ class FcmSender {
 
     private val http = HttpClient.newHttpClient()
 
-<<<<<<< Updated upstream
+    private val tokenLock = Any()
+    @Volatile private var cachedAccessToken: String? = null
+    @Volatile private var tokenExpiryTime: Long = 0L
+
     val enabled get() = !projectId.isNullOrEmpty() && creds != null
 
     init {
         println("[FCM] Initialized: enabled=$enabled, projectId=${projectId ?: "MISSING"}")
     }
-
-    /** يرجع false فقط إذا كان الرمز غير صالح (404 / UNREGISTERED) ويجب حذفه. */
-=======
-    private val tokenLock = Any()
-    @Volatile private var cachedAccessToken: String? = null
-    @Volatile private var tokenExpiryTime: Long = 0L
-
-    val enabled get() = projectId != null && creds != null
 
     private fun getValidAccessToken(c: GoogleCredentials): String? {
         val now = System.currentTimeMillis()
@@ -80,8 +75,7 @@ class FcmSender {
         }
     }
 
-    /** يرجع false فقط إذا كان الرمز غير صالح ويجب حذفه. */
->>>>>>> Stashed changes
+    /** يرجع false فقط إذا كان الرمز غير صالح (404 / UNREGISTERED) ويجب حذفه. */
     fun wake(token: String): Boolean {
         if (!enabled) {
             println("[FCM] FCM is disabled (missing FCM_PROJECT_ID or FCM_SERVICE_ACCOUNT_JSON)")
@@ -89,21 +83,7 @@ class FcmSender {
         }
         val c = creds ?: return true
         return try {
-<<<<<<< Updated upstream
-            synchronized(c) {
-                c.refreshIfExpired()
-            }
-            val accessToken = c.accessToken?.tokenValue ?: run {
-                synchronized(c) {
-                    c.refresh()
-                    c.accessToken?.tokenValue
-                }
-            }
-
-            if (accessToken == null) {
-=======
             val accessToken = getValidAccessToken(c) ?: run {
->>>>>>> Stashed changes
                 println("[FCM] Failed to obtain valid access token from GoogleCredentials")
                 return true
             }
