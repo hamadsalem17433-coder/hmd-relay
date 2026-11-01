@@ -10,18 +10,15 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
 /**
- * يرسل نبضة إيقاظ صامتة عالية الأولوية (Data-Only High Priority Push).
- * هذا يضمن قيام أندرويد بتشغيل FcmService.onMessageReceived حتى والتطبيق مغلق تماماً،
- * ليتصل التطبيق بالخادم ويفك تشفير الرسالة أو يشغّل رنين المكالمة الواردة.
+ * يرسل نبضة إيقاظ صامتة عالية الأولوية مع إشعار نظام مباشر (Notification + Data High Priority Push).
+ * هذا يضمن قيام خدمات Google Play Services بعرض الإشعار فوراً وتنبيه المستخدم أوتوماتيكياً حتى لو كان التطبيق مغلقاً تماماً.
  */
 class FcmSender {
 
     private fun readConfig(name: String): String? {
-        // 1. المحاولة الأولى: القراءة من Environment Variables
         val envVal = System.getenv(name)?.trim()
         if (!envVal.isNullOrEmpty()) return envVal
 
-        // 2. المحاولة الثانية: القراءة من Secret Files في Render (/etc/secrets/)
         val secretFile = File("/etc/secrets/$name")
         if (secretFile.exists() && secretFile.canRead()) {
             val fileVal = runCatching { secretFile.readText().trim() }.getOrNull()
@@ -88,13 +85,23 @@ class FcmSender {
                 return true
             }
 
-            // إرسال Data-Only Message بأولوية HIGH لإجبار أندرويد على إيقاظ FcmService والتطبيق مغلق
+            // إرسال Notification + Data بأولوية HIGH لتضمن خدمات أندرويد و Google Play عرض الإشعار والتطبيق مغلق
             val body = buildJsonObject {
                 put("message", buildJsonObject {
                     put("token", token)
+                    put("notification", buildJsonObject {
+                        put("title", "HMD Messenger")
+                        put("body", "رسالة جديدة")
+                    })
                     put("android", buildJsonObject {
                         put("priority", "HIGH")
                         put("ttl", "60s")
+                        put("notification", buildJsonObject {
+                            put("channel_id", "messages")
+                            put("sound", "default")
+                            put("notification_priority", "PRIORITY_MAX")
+                            put("visibility", "PUBLIC")
+                        })
                     })
                     put("data", buildJsonObject {
                         put("wake", "1")
